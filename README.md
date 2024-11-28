@@ -24,7 +24,7 @@ cd ChatInitiator
 
 ```bash
 python -m venv venv
-source venv/bin/activate  # для Windows используйте source venv\Scripts\activate
+source venv/bin/activate  # для Windows используйте source venv/Scripts/activate
 ```
 Установите необходимые библиотеки:
 
