@@ -198,13 +198,14 @@ def write_user_data_to_db(user_data, db_name="user_profiles.db"):
     print(f"Данные записаны в базу данных {db_name}")
 
 
-def get_records_for_messaging(limit=10, db_name="user_profiles.db"):
+def get_users_for_action(limit=10, db_name="user_profiles.db", action="send_message"):
     """
-    Получает записи из базы данных для отправки сообщений.
+    Получает записи из базы данных для отправки сообщений или проверки ответов пользователей.
 
     Args:
         limit (int): Максимальное количество записей, которые нужно получить.
         db_name (str): Имя базы данных.
+        action (str): Тип действия ("send_message" или "check_replies").
 
     Returns:
         list: Список записей (словарей) с данными пользователей.
@@ -212,16 +213,67 @@ def get_records_for_messaging(limit=10, db_name="user_profiles.db"):
     with sqlite3.connect(db_name) as conn:
         conn.row_factory = sqlite3.Row  # Позволяет возвращать строки как словари
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT profile_id, name
-            FROM profiles
-            WHERE is_new_dialog IS NULL
-            ORDER BY date_added DESC
-            LIMIT ?
-        ''', (limit,))
+
+        if action == "send_message":
+            # Запрос для отправки сообщений: выбираем пользователей, у которых поле is_new_dialog NULL
+            query = '''
+                SELECT profile_id, name
+                FROM profiles
+                WHERE is_new_dialog IS NULL
+                ORDER BY date_added DESC
+                LIMIT ?
+            '''
+            cursor.execute(query, (limit,))
+        elif action == "check_replies":
+            # Запрос для проверки ответов: выбираем пользователей с is_new_dialog = 1 и replied IS NULL
+            query = '''
+                SELECT profile_id, message_date
+                FROM profiles
+                WHERE is_new_dialog = 1 AND replied IS NULL
+            '''
+            cursor.execute(query)
+        else:
+            raise ValueError("Неверный параметр action. Должно быть 'send_message' или 'check_replies'.")
+
         records = cursor.fetchall()
 
     return [dict(record) for record in records]
+
+
+def update_user_data(update_fields, db_name="user_profiles.db"):
+    """
+    Обновляет данные в базе данных для определенных пользователей.
+
+    Args:
+        update_fields (dict): Словарь, где ключи — это имена столбцов для обновления,
+                               а значения — это новые значения для этих столбцов.
+        db_name (str): Имя базы данных.
+
+    Returns:
+        None
+    """
+    # Подключаемся к базе данных
+    conn = sqlite3.connect(db_name)
+    cursor = conn.cursor()
+
+    # Строим динамический SQL-запрос для обновления полей
+    set_clause = ', '.join([f"{key} = ?" for key in update_fields.keys()])
+    values = list(update_fields.values())
+
+    try:
+        cursor.execute(f'''
+            UPDATE profiles
+            SET {set_clause}
+            WHERE profile_id = ?
+        ''', values + [update_fields.get('profile_id')])  # Дополняем запрос profile_id
+
+        conn.commit()
+        updated_fields = ', '.join([f"{key} = {repr(value)}" for key, value in update_fields.items()])
+        print(f"Данные для пользователя с profile_id = {update_fields.get('profile_id')} были успешно обновлены: {updated_fields}")
+    except sqlite3.Error as e:
+        print(f"Ошибка при обновлении данных: {e}")
+    finally:
+        conn.close()
 
 
 def send_messages(browser, users):
@@ -238,14 +290,23 @@ def send_messages(browser, users):
     not_sent_count = 0
 
     for user in users:
+        profile_id = user['profile_id']  # Получаем profile_id один раз в начале
+
         # Открываем страницу чата пользователя
-        browser.get(f"https://chat.azbyka.ru/#{user['profile_id']}")
+        browser.get(f"https://chat.azbyka.ru/#{profile_id}")
         sleep(20)  # Ждём загрузки страницы
 
         try:
             # Проверяем количество элементов с классом "text"
             text_elements = browser.find_elements(By.CLASS_NAME, "text")
             if len(text_elements) > 1:
+                # Если чат уже имеет сообщения, помечаем как не новый диалог
+                update_fields = {
+                    'profile_id': profile_id,
+                    'is_new_dialog': False  # Помечаем как не новый диалог
+                }
+                update_user_data(update_fields)
+
                 not_sent_count += 1
                 continue
 
@@ -255,10 +316,63 @@ def send_messages(browser, users):
             message_input.send_keys(message, Keys.ENTER)
             sleep(100)  # Ждём 2 минуты перед началом следующего диалога
 
+            # Обновляем данные в базе данных после отправки сообщения
+            update_fields = {
+                'profile_id': profile_id,
+                'message_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'is_new_dialog': True
+            }
+            update_user_data(update_fields)
+
         except NoSuchElementException:
-            print(f"Элемент не найден для пользователя {user['id']}.")
+            print(f"Элемент не найден для пользователя {profile_id}.")
 
     return not_sent_count
+
+
+
+def check_user_replied(browser):
+    """
+    Проверяет, ответил ли пользователь в чате, и обновляет поле replied в базе данных.
+
+    Args:
+        browser: Объект Selenium WebDriver.
+        limit (int): Максимальное количество записей для проверки.
+        db_name (str): Имя базы данных.
+
+    Returns:
+        None
+    """
+    users = get_users_for_action(action="check_replies")
+
+    for user in users:
+        profile_id = user['profile_id']
+        message_date = datetime.strptime(user['message_date'], '%Y-%m-%d %H:%M:%S')
+
+        # Открываем страницу чата пользователя
+        browser.get(f"https://chat.azbyka.ru/#{profile_id}")
+        sleep(10)  # Ждем загрузки страницы
+
+        text_elements = browser.find_elements(By.CLASS_NAME, "text")
+
+        if len(text_elements) >= 3:
+            # Если сообщений с классом 'text' 3 или больше, значит пользователь ответил
+            update_fields = {
+                'profile_id': profile_id,
+                'replied': True
+            }
+            update_user_data(update_fields)
+
+        elif len(text_elements) < 3:
+            # Если сообщений с классом 'text' меньше 3, проверяем, прошло ли 14 дней
+            days_diff = (datetime.now() - message_date).days
+            if days_diff >= 14:
+                # Если прошло 14 дней, ставим False в поле replied
+                update_fields = {
+                    'profile_id': profile_id,
+                    'replied': False
+                }
+                update_user_data(update_fields)
 
 
 def main(user_profile):
@@ -277,18 +391,21 @@ def main(user_profile):
 
 
         # Применяем фильтрацию
-        # apply_filter_parameters(browser)
-        # sleep(5)
+        apply_filter_parameters(browser)
+        sleep(5)
 
-        # # Находим список ссылок на анкеты из выдачи
-        # user_data = get_user_profile_data(browser)
-        # write_user_data_to_db(user_data)
+        # Находим список ссылок на анкеты из выдачи
+        user_data = get_user_profile_data(browser)
+        write_user_data_to_db(user_data)
 
         limit = 10
 
         while limit != 0:
-            users = get_records_for_messaging(limit)
+            users = get_users_for_action(limit)
             limit -= send_messages(browser, users)
+
+        print('Дошли до функции check_user_replied')
+        check_user_replied(browser)
         sleep(30)
 
 if __name__ == "__main__":
