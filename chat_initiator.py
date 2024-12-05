@@ -220,6 +220,9 @@ def get_users_for_action(limit=10, db_name="user_profiles.db", action="send_mess
                 SELECT profile_id, name
                 FROM profiles
                 WHERE is_new_dialog IS NULL
+                AND is_deleted IS NOT TRUE
+                AND is_ignoring IS NOT TRUE
+                AND in_ignore IS NOT TRUE
                 ORDER BY date_added DESC
                 LIMIT ?
             '''
@@ -229,7 +232,11 @@ def get_users_for_action(limit=10, db_name="user_profiles.db", action="send_mess
             query = '''
                 SELECT profile_id, message_date
                 FROM profiles
-                WHERE is_new_dialog = 1 AND replied IS NULL
+                WHERE is_new_dialog = 1
+                AND replied IS NULL
+                AND is_deleted IS NOT TRUE
+                AND is_ignoring IS NOT TRUE
+                AND in_ignore IS NOT TRUE
             '''
             cursor.execute(query)
         else:
@@ -276,6 +283,58 @@ def update_user_data(update_fields, db_name="user_profiles.db"):
         conn.close()
 
 
+def check_ignore_message(browser):
+    """
+    Проверяет появление сообщения об игноре на странице.
+
+    Args:
+        browser: Объект Selenium WebDriver.
+
+    Returns:
+        bool: True, если сообщение об игноре найдено, иначе False.
+    """
+    try:
+        # Ищем элемент с текстом сообщения
+        ignore_message_text = browser.find_element(By.ID, "info-box-content").text
+        if ignore_message_text == "Сообщение не было отправлено, так как пользователь добавил Вас в игнор-лист.":
+            print("Сообщение об игноре найдено")
+            return True
+        return False
+    except Exception as e:
+        print("Ошибка при проверке игнора:", str(e))
+
+
+def add_user_to_ignore(browser, profile_id):
+    """
+    Переходит на страницу профиля пользователя и кликает по ссылке "В игнор".
+
+    Args:
+        browser: Объект Selenium WebDriver.
+        profile_id (int): ID профиля пользователя.
+
+    Returns:
+        bool: True, если пользователь успешно добавлен в игнор, иначе False.
+    """
+    try:
+        # Формируем URL профиля
+        profile_url = f"https://azbyka.ru/znakomstva/profile/{profile_id}"
+
+        # Открываем страницу профиля
+        browser.get(profile_url)
+        sleep(5)  # Ждем загрузки страницы
+
+        # Ищем ссылку "В игнор" и кликаем по ней
+        ignore_link = browser.find_element(By.LINK_TEXT, "В игнор")
+        ignore_link.click()
+        print(f"Пользователь {profile_id} добавлен в игнор.")
+        return True
+    except NoSuchElementException:
+        print(f"Ссылка 'В игнор' для пользователя {profile_id} не найдена.")
+    except Exception as e:
+        print(f"Ошибка при добавлении пользователя {profile_id} в игнор: {str(e)}")
+    return False
+
+
 def send_messages(browser, users):
     """
     Отправляет сообщения пользователям, если в чате меньше двух элементов с классом 'text'.
@@ -305,6 +364,7 @@ def send_messages(browser, users):
                     'profile_id': profile_id,
                     'is_new_dialog': False  # Помечаем как не новый диалог
                 }
+                print('Вносим данные о не новом диалоге, вызывая функцию update_user_data из sesd_messages')
                 update_user_data(update_fields)
 
                 not_sent_count += 1
@@ -316,19 +376,91 @@ def send_messages(browser, users):
             message_input.send_keys(message, Keys.ENTER)
             sleep(100)  # Ждём 2 минуты перед началом следующего диалога
 
+            if check_ignore_message(browser):
+                update_fields = {
+                    'profile_id': profile_id,
+                    'is_ignored': True
+                }
+                if add_user_to_ignore(browser, profile_id):
+                    update_fields['in_ignore'] = True
+                print('Пользователь добавил в игнор. Вносим данные в базу.')
+                update_user_data(update_fields)
+                continue
+
+
             # Обновляем данные в базе данных после отправки сообщения
             update_fields = {
                 'profile_id': profile_id,
                 'message_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'is_new_dialog': True
             }
+            print('Вносим данные об отправке сообщения, вызывая функцию update_user_data из sesd_messages')
             update_user_data(update_fields)
 
         except NoSuchElementException:
             print(f"Элемент не найден для пользователя {profile_id}.")
+            try:
+                profile_is_delete = browser.find_element(By.CLASS_NAME, "write-blocked")
+                print('profile_is_delete =', profile_is_delete, 'profile_is_delete.text =', profile_is_delete.text)
+                if profile_is_delete.text == "Анкета пользователя удалена.":
+                    print("Анкета пользователя удалена.")
+                    update_fields = {
+                        'profile_id': profile_id,
+                        'is_deleted': True
+                    }
+                    print('Вносим данные об удалении анкеты пользователя, вызывая функцию update_user_data из блока except функции sesd_messages')
+                    update_user_data(update_fields)
+            except:
+                print('Не удалось получить profile_is_delete или profile_is_delete.text')
 
     return not_sent_count
 
+
+def check_message_read_status(browser, index, message_type=None):
+    """
+    Проверяет, прочитано ли сообщение по индексу в зависимости от его типа.
+
+    Args:
+        browser: Экземпляр веб-драйвера Selenium.
+        index (int): Индекс сообщения для проверки.
+        message_type (str, optional): Тип сообщения: "outcoming" или "incoming".
+
+    Returns:
+        bool: True, если сообщение прочитано, False, если непрочитано.
+    """
+
+    try:
+        # Поиск контейнера с сообщениями
+        messages = browser.find_elements(By.CSS_SELECTOR, "div.chat div.messages>div.message")
+        # if not messages_container:
+        #     raise NoSuchElementException("Контейнер с сообщениями не найден.")
+
+        # messages = messages_container.find_elements(By.CLASS_NAME, "message")
+
+        # Фильтрация сообщений по типу
+        if message_type == "outcoming":
+            messages = [msg for msg in messages if "outcoming" in msg.get_dom_attribute("class")]
+
+        elif message_type == "incoming":
+            messages = [msg for msg in messages if "incoming" in msg.get_dom_attribute("class")]
+        else:
+            messages = messages
+
+        # Проверка индекса сообщения
+        try:
+            message = messages[index]
+        except IndexError:
+            print(f"Сообщение с индексом {index} не существует в чате по ссылке "
+                  f"{browser.current_url}")
+
+        # Проверяем наличие класса "unread"
+        print(f'Сообщение в чате {browser.current_url} прочитано:', "unread" not in message.get_dom_attribute("class").split())
+        return "unread" not in message.get_dom_attribute("class").split()
+
+    except NoSuchElementException as e:
+        print(f"Ошибка: {e} в чате {browser.current_url}")
+    except Exception as e:
+        print(f"Ошибка при проверке статуса сообщения: {e} в чате {browser.current_url}")
 
 
 def check_user_replied(browser):
@@ -354,24 +486,30 @@ def check_user_replied(browser):
         sleep(10)  # Ждем загрузки страницы
 
         text_elements = browser.find_elements(By.CLASS_NAME, "text")
+        print(profile_id, "количество сообщений:", len(text_elements) - 1)
+        status_first_message = check_message_read_status(browser, 0)
 
         if len(text_elements) >= 3:
             # Если сообщений с классом 'text' 3 или больше, значит пользователь ответил
             update_fields = {
                 'profile_id': profile_id,
-                'replied': True
+                'replied': True,
+                'unread': False
             }
+            print('Вносим данные об ответе, вызывая функцию update_user_data из check_user_replied')
             update_user_data(update_fields)
 
         elif len(text_elements) < 3:
             # Если сообщений с классом 'text' меньше 3, проверяем, прошло ли 14 дней
             days_diff = (datetime.now() - message_date).days
-            if days_diff >= 14:
-                # Если прошло 14 дней, ставим False в поле replied
+            if days_diff >= 7 and status_first_message:
+                # Если прошло 7 дней, и сообщение прочитано, ставим False в поле replied
                 update_fields = {
                     'profile_id': profile_id,
-                    'replied': False
+                    'replied': False,
+                    'unread': False
                 }
+                print('Вносим данные об отсутствии ответа в течение 14 дней, вызывая функцию update_user_data из check_user_replied')
                 update_user_data(update_fields)
 
 
@@ -390,21 +528,26 @@ def main(user_profile):
             login_to_site(browser, login, password)
 
 
-        # Применяем фильтрацию
-        apply_filter_parameters(browser)
-        sleep(5)
+        # # Применяем фильтрацию
+        # apply_filter_parameters(browser)
+        # sleep(5)
 
-        # Находим список ссылок на анкеты из выдачи
-        user_data = get_user_profile_data(browser)
-        write_user_data_to_db(user_data)
+        # # Находим список ссылок на анкеты из выдачи
+        # user_data = get_user_profile_data(browser)
+        # write_user_data_to_db(user_data)
 
-        limit = 10
+        # limit = 10
 
-        while limit != 0:
-            users = get_users_for_action(limit)
-            limit -= send_messages(browser, users)
+        # while limit != 0:
+        #     print('Цикл while в функции main, limit =', limit)
+        #     users = get_users_for_action(limit)
+        #     if not users:
+        #         print("Пользователи из поисковой выдачи, с которыми не начат диалог, закончились")
+        #         break
+        #     limit = send_messages(browser, users)
+        #     print('После вычитания значения, которое вернула функция send_messages, limit стал равным', limit)
 
-        print('Дошли до функции check_user_replied')
+        # print('Дошли до функции check_user_replied')
         check_user_replied(browser)
         sleep(30)
 
