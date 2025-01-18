@@ -1,4 +1,5 @@
 import os
+import sys
 import sqlite3
 from datetime import datetime
 from time import sleep
@@ -16,10 +17,18 @@ LOGIN_URL = "https://azbyka.ru/znakomstva/login"
 ADVANCED_SEARCH_URL = "https://azbyka.ru/znakomstva/member/userby-locations"
 
 
-# Загружаем данные из .env файла
-load_dotenv()
+if getattr(sys, 'frozen', False):  # Программа собрана
+    base_path = sys._MEIPASS  # Путь ко временной директории PyInstaller
+else:
+    base_path = os.getcwd()  # Путь к текущей директории
+
+dotenv_path = os.path.join(base_path, '.env')
+load_dotenv(dotenv_path=dotenv_path)
+
 login = os.getenv('LOGIN')
 password = os.getenv('PASSWORD')
+db_name = os.getenv('DB_NAME')
+
 
 # Функция для создания и настройки ChromeOptions
 def setup_chrome_options():
@@ -154,7 +163,7 @@ def get_user_profile_data(browser):
         return user_data
 
 
-def write_user_data_to_db(user_data, db_name="user_profiles.db"):
+def write_user_data_to_db(user_data, db_name=db_name):
     # Подключаемся к базе данных
     conn = sqlite3.connect(db_name)
     cursor = conn.cursor()
@@ -198,7 +207,7 @@ def write_user_data_to_db(user_data, db_name="user_profiles.db"):
     print(f"Данные записаны в базу данных {db_name}")
 
 
-def get_users_for_action(limit=10, db_name="user_profiles.db", action="send_message"):
+def get_users_for_action(limit=10, db_name=db_name, action="send_message"):
     """
     Получает записи из базы данных для отправки сообщений или проверки ответов пользователей.
 
@@ -247,7 +256,7 @@ def get_users_for_action(limit=10, db_name="user_profiles.db", action="send_mess
     return [dict(record) for record in records]
 
 
-def update_user_data(update_fields, db_name="user_profiles.db"):
+def update_user_data(update_fields, db_name=db_name):
     """
     Обновляет данные в базе данных для определенных пользователей.
 
@@ -509,7 +518,7 @@ def check_user_replied(browser):
                     'replied': False,
                     'unread': False
                 }
-                print('Вносим данные об отсутствии ответа в течение 14 дней, вызывая функцию update_user_data из check_user_replied')
+                print('Вносим данные об отсутствии ответа в течение 7 дней, вызывая функцию update_user_data из check_user_replied')
                 update_user_data(update_fields)
 
 
@@ -528,26 +537,26 @@ def main(user_profile):
             login_to_site(browser, login, password)
 
 
-        # # Применяем фильтрацию
-        # apply_filter_parameters(browser)
-        # sleep(5)
+        # Применяем фильтрацию
+        apply_filter_parameters(browser)
+        sleep(5)
 
-        # # Находим список ссылок на анкеты из выдачи
-        # user_data = get_user_profile_data(browser)
-        # write_user_data_to_db(user_data)
+        # Находим список ссылок на анкеты из выдачи
+        user_data = get_user_profile_data(browser)
+        write_user_data_to_db(user_data)
 
-        # limit = 10
+        limit = 10
 
-        # while limit != 0:
-        #     print('Цикл while в функции main, limit =', limit)
-        #     users = get_users_for_action(limit)
-        #     if not users:
-        #         print("Пользователи из поисковой выдачи, с которыми не начат диалог, закончились")
-        #         break
-        #     limit = send_messages(browser, users)
-        #     print('После вычитания значения, которое вернула функция send_messages, limit стал равным', limit)
+        while limit != 0:
+            print('Цикл while в функции main, limit =', limit)
+            users = get_users_for_action(limit)
+            if not users:
+                print("Пользователи из поисковой выдачи, с которыми не начат диалог, закончились")
+                break
+            limit = send_messages(browser, users)
+            print('После вычитания значения, которое вернула функция send_messages, limit стал равным', limit)
 
-        # print('Дошли до функции check_user_replied')
+        print('Дошли до функции check_user_replied')
         check_user_replied(browser)
         sleep(30)
 
@@ -559,3 +568,4 @@ if __name__ == "__main__":
     else:
         user_profile = False
     main(user_profile)
+    sleep(30)

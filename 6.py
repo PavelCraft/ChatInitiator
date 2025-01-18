@@ -2,19 +2,21 @@ import os
 import sqlite3
 from datetime import datetime
 from time import sleep
-from selenium.common.exceptions import NoSuchElementException
 
 from dotenv import load_dotenv
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import Select
-from chat_initiator import setup_chrome_options, login_to_site
 
+from chat_initiator import login_to_site, setup_chrome_options
 
 LOGIN_URL = "https://azbyka.ru/znakomstva/login"
 CHAT_URL = "https://chat.azbyka.ru/#481133"
 # CHAT_URL = "https://chat.azbyka.ru/#485380"
+CHAT_URL = "https://chat.azbyka.ru/#482721"
+CHAT_URL = "https://chat.azbyka.ru/#470805"
 
 
 # Загружаем данные из .env файла
@@ -26,8 +28,6 @@ password = os.getenv('PASSWORD')
 # Настройки браузера
 options_chrome = setup_chrome_options()
 
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
 
 def add_user_to_ignore(browser, profile_id):
     """
@@ -125,6 +125,22 @@ def check_message_read_status(browser, index, message_type=None):
         print(f"Ошибка при проверке статуса сообщения: {e}")
 
 
+def check_unanswered_messages(browser):
+    sleep(5)
+    try:
+        messages = browser.find_elements(By.CSS_SELECTOR, "div.chat div.messages>div.message")
+        message = messages[-1]
+        if "incoming" in message.get_dom_attribute("class"):
+            print('В чате {browser.current_url} есть неотвеченное сообщение')
+            return browser.current_url
+    except IndexError:
+        print(f"Нет сообщений в чате по ссылке {browser.current_url}")
+
+    except NoSuchElementException as e:
+        print(f"Ошибка: {e} в чате {browser.current_url}")
+    except Exception as e:
+        print(f"Ошибка при проверке статуса сообщения: {e} в чате {browser.current_url}")
+
 
 # Запуск браузера и выполнение сценария
 with webdriver.Chrome(options=options_chrome) as browser:
@@ -134,5 +150,8 @@ with webdriver.Chrome(options=options_chrome) as browser:
 
     # Переходим в чат и выполняем проверку
     # print(send_message_and_check_ignore(browser, CHAT_URL, "."))
-    browser.get("https://chat.azbyka.ru/#470630")
-    print(check_message_read_status(browser, -1, message_type="outcoming"))
+    # browser.get("https://chat.azbyka.ru/#470630")
+    # print(check_message_read_status(browser, -1, message_type="outcoming"))
+
+    browser.get(CHAT_URL)
+    print(check_unanswered_messages(browser))
